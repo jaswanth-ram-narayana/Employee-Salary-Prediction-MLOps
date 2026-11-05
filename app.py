@@ -1,74 +1,84 @@
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
-import mlflow
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+import joblib
 import pandas as pd
-import logging
-import os
+import time
 
-logging.basicConfig(
-    filename="salary1_api.log",
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    force=True
+app = FastAPI(title="Employee Salary Prediction API")
+
+model = joblib.load("salary_model/model.pkl")
+preprocessor = joblib.load("salary_model/preprocessor.pkl")
+
+REQUEST_COUNT = Counter(
+    "salary_prediction_requests_total",
+    "Total salary prediction requests"
 )
 
-MODEL_URI = os.getenv("MODEL_URI", "models:/Salary Prediction model/3")
-model = None
-
-app = FastAPI(
-    title="Salary Prediction API",
-    version="1.0",
-    description="Salary Prediction using MLflow Registered Model"
+SUCCESS_COUNT = Counter(
+    "salary_prediction_success_total",
+    "Successful salary predictions"
 )
 
-class Employee(BaseModel):
-    Age: int
+ERROR_COUNT = Counter(
+    "salary_prediction_errors_total",
+    "Failed salary predictions"
+)
+
+REQUEST_LATENCY = Histogram(
+    "salary_prediction_request_duration_seconds",
+    "Time taken for salary predictions"
+)
+
+class EmployeeData(BaseModel):
+    Age: float
     Gender: str
     Education_Level: str
     Job_Title: str
     Years_of_Experience: float
 
-@app.on_event("startup")
-def load_model():
-    global model
-    try:
-        print("Loading Registered Model...")
-        logging.info("Loading Registered Model...")
-        model = mlflow.pyfunc.load_model(MODEL_URI)
-        print("Model Loaded Successfully!")
-        logging.info("Model Loaded Successfully!")
-    except Exception as e:
-        model = None
-        logging.error(f"Model loading failed: {e}")
-        print(f"Model loading failed: {e}")
+@app.get("/")
+def home():
+    return {"message": "Employee Salary Prediction API is running"}
 
 @app.get("/health")
 def health():
-    return {
-        "status": "Running",
-        "model_loaded": model is not None
-    }
+    return {"status": "healthy"}
 
 @app.post("/predict")
-def predict(employee: Employee):
-    try:
-        if model is None:
-            return {"Error": "Model not loaded"}
+def predict_salary(data: EmployeeData):
+    REQUEST_COUNT.inc()
+    start_time = time.time()
 
-        input_df = pd.DataFrame([{
-            "Age": employee.Age,
-            "Gender": employee.Gender,
-            "Education Level": employee.Education_Level,
-            "Job Title": employee.Job_Title,
-            "Years of Experience": employee.Years_of_Experience
+    try:
+        input_data = pd.DataFrame([{
+            "Age": data.Age,
+            "Gender": data.Gender,
+            "Education Level": data.Education_Level,
+            "Job Title": data.Job_Title,
+            "Years of Experience": data.Years_of_Experience
         }])
 
-        prediction = model.predict(input_df)
+        processed_data = preprocessor.transform(input_data)
+        prediction = model.predict(processed_data)
+
+        SUCCESS_COUNT.inc()
 
         return {
-            "Predicted Salary": round(float(prediction[0]), 2)
+            "predicted_salary": round(float(prediction[0]), 2)
         }
 
-    except Exception as e:
-        logging.error(str(e))
-        return {"Error": str(e)}
+    except Exception:
+        ERROR_COUNT.inc()
+        raise
+
+    finally:
+        REQUEST_LATENCY.observe(time.time() - start_time)
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )

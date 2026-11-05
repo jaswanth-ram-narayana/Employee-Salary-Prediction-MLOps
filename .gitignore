@@ -1,1 +1,11 @@
 /Salary Data.xlsx
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.log
+*.log.txt
+mlflow.db
+mlruns/
+.venv/
+venv/
